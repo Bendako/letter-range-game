@@ -87,18 +87,18 @@ Letter Range
    - Initialize a NextJS project with TypeScript. - Done
    - Install dependencies: Three.js, TailwindCSS, React. - Done
 2. **Start Screen**:
-   - Create a `StartScreen` component with title, button, and instructions.
-   - Style with TailwindCSS.
-   - Add accessibility (tabindex, onKeyDown for Enter).
+   - Create a `StartScreen` component with title, button, and instructions. - Done
+   - Style with TailwindCSS. - Done
+   - Add accessibility (tabindex, onKeyDown for Enter). - Done
 3. **Game Screen**:
-   - Create a `GameScreen` component.
+   - Create a `GameScreen` component. - Done
    - Integrate Three.js:
-     - Set up a 3D scene with camera, lights, and renderer.
-     - Add a crosshair (2D overlay or 3D object).
-     - Create moving target objects (spheres) with letter textures.
-     - Handle mouse movement for crosshair and click to shoot.
+     - Set up a 3D scene with camera, lights, and renderer. - Done
+     - Add a crosshair (2D overlay or 3D object). - Done
+     - Create moving target objects (spheres) with letter textures. - Done
+     - Handle mouse movement for crosshair and click to shoot. - Done
    - Implement HUD with TailwindCSS:
-     - Display target word, progress, score, and timer.
+     - Display target word, progress, score, and timer. - Done
    - Add keyboard controls (Enter to shoot).
 4. **Game Logic**:
    - Fetch word from backend on game start.
