@@ -21,7 +21,7 @@ const SimpleHUD = ({ targetWord, progress, score, timeLeft, gameStatus, newLette
   // Early return with error if no target word, but still render something visible
   if (!targetWord) {
     return (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center" style={{ pointerEvents: 'none' }}>
+      <div className="fixed inset-0 z-10 flex items-center justify-center" style={{ pointerEvents: 'none' }}>
         <div className="bg-red-800 text-white p-6 rounded-lg text-xl font-bold">
           Error: No target word available
         </div>
@@ -31,16 +31,16 @@ const SimpleHUD = ({ targetWord, progress, score, timeLeft, gameStatus, newLette
 
   return (
     <div 
-      className="fixed inset-x-0 top-0 z-[9999] p-4"
+      className="fixed inset-x-0 top-0 z-10 p-4"
       style={{ pointerEvents: 'none' }}
     >
-      {/* Force to very high z-index to ensure it's on top of everything */}
+      {/* Use a more moderate z-index that doesn't block interaction */}
       <div 
-        className="bg-black bg-opacity-90 p-4 rounded-lg mx-auto max-w-3xl border-4 border-yellow-400 shadow-lg"
+        className="bg-black bg-opacity-70 p-4 rounded-lg mx-auto max-w-3xl border-2 border-yellow-400 shadow-lg"
         style={{ transform: 'none', maxWidth: '800px', margin: '0 auto' }}
       >
-        {/* Attention-grabbing pulse animation */}
-        <div className="absolute inset-0 border-4 border-red-500 rounded-lg animate-pulse"></div>
+        {/* Make pulse animation less intrusive */}
+        <div className="absolute inset-0 border-2 border-red-500 rounded-lg animate-pulse"></div>
         
         {/* Score and Time */}
         <div className="flex justify-between mb-4">
