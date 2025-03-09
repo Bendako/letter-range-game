@@ -47,10 +47,14 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
   const [isInitialized, setIsInitialized] = useState(false); // Add state to track initialization
   const [isPaused, setIsPaused] = useState(false);
   const [newLetterInfo, setNewLetterInfo] = useState('');
+  const [showHUD, setShowHUD] = useState(true); // New state to control HUD visibility
 
   // Initialize game
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // Set HUD to hidden initially
+    setShowHUD(false);
 
     console.log("Initializing 3D scene...");
     
@@ -409,6 +413,8 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
   const handleShoot = (event: React.MouseEvent) => {
     if (!sceneRef.current || !cameraRef.current) return;
 
+    // Don't show the HUD automatically on every shot
+
     // Update mouse position for raycaster
     mouseRef.current.x = (event.clientX / window.innerWidth) * 2 - 1;
     mouseRef.current.y = -(event.clientY / window.innerHeight) * 2 + 1;
@@ -453,13 +459,21 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       playSound('correct');
       setScore(prev => prev + 100);
       setGameStatus('Good shot!');
-
-      // Check if word is complete
+      
+      // Only briefly flash the HUD for word completion
       if (!updatedProgress.includes('_')) {
         // Word complete - celebration status
         setGameStatus(`Great job! +500 points!`);
         
-        // Keep the success message visible longer (3 seconds) before moving to next word
+        // Show HUD for a brief moment for word completion celebration
+        setShowHUD(true);
+        
+        // Hide HUD after 2 seconds
+        setTimeout(() => {
+          setShowHUD(false);
+        }, 2000);
+        
+        // Add a new word after delay
         setTimeout(() => {
           const newTargetWord = TARGET_WORDS[Math.floor(Math.random() * TARGET_WORDS.length)];
           setTargetWord(newTargetWord);
@@ -476,9 +490,7 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
     }
   };
 
-  // No duplicate declaration here
-
-  // UPDATED: Spawn letter targets with pause for visibility
+  // Spawn letter targets without automatically showing the HUD
   const spawnLetterTarget = () => {
     if (!sceneRef.current || isPaused) return;
 
@@ -544,22 +556,14 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       row // Store the row information
     });
     
-    // Pause the game to display the new letter
-    setIsPaused(true);
+    // Update newLetterInfo without showing the HUD
+    setNewLetterInfo(`New Letter: ${letter} | Row: ${row + 1} (${mesh.position.x > 0 ? 'Right' : 'Left'} side)`);
     
-    // Update game status to show the new letter
-    setGameStatus(`New Letter: ${letter}`);
-    setNewLetterInfo(`Row: ${row + 1} (${mesh.position.x > 0 ? 'Right' : 'Left'} side)`);
-    
-    // Resume the game after 5 seconds
-    setTimeout(() => {
-      setIsPaused(false);
-      setNewLetterInfo('');
-      setGameStatus(targetWord ? `Shoot: ${targetWord}!` : 'Get Ready!');
-    }, 5000);
+    // We don't pause the game or show the HUD for each new letter
+    // This solves the issue of the HUD constantly popping up
   };
 
-  // UPDATED: Update targets with row-based movement and pause functionality
+  // Update targets with row-based movement and pause functionality
   const updateTargets = () => {
     // Skip updates if the game is paused
     if (isPaused) return;
@@ -600,6 +604,7 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
   const announceTargetWord = (word: string) => {
     setGameStatus(`Shoot: ${word}!`);
     playSound('announcement');
+    // Don't automatically show HUD for word announcements
   };
 
   // End the game
@@ -607,11 +612,25 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
     // Set a final game status
     setGameStatus('Game Over! Final Score: ' + score);
     
-    // Keep the HUD visible for a few seconds (5 seconds) before transitioning
+    // Don't show HUD for game over, let the GameOverScreen handle it
+    
+    // Transition to game over screen
     setTimeout(() => {
       onGameOver(score);
-    }, 5000);
+    }, 1000);
   };
+
+  // Toggle HUD on keypress (for testing)
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if (e.key === 'h' || e.key === 'H') {
+        setShowHUD(prev => !prev);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, []);
 
   return (
     <div className="relative w-full h-screen overflow-hidden" ref={containerRef} onClick={handleShoot}>
@@ -620,9 +639,19 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
         {/* Three.js will render here */}
       </div>
       
-      {/* HUD Components - Use appropriate z-index values */}
+      {/* Always visible crosshair */}
       {isInitialized && (
-        <>
+        <div className="fixed inset-0 z-[9000] pointer-events-none" style={{ pointerEvents: 'none' }}>
+          <Crosshair />
+        </div>
+      )}
+      
+      {/* HUD Component with conditional opacity */}
+      {isInitialized && (
+        <div 
+          className={`fixed inset-0 z-[8000] pointer-events-none transition-opacity duration-500 ${showHUD ? 'opacity-100' : 'opacity-0'}`} 
+          style={{ pointerEvents: 'none' }}
+        >
           <SimpleHUD 
             targetWord={targetWord}
             progress={progress}
@@ -631,15 +660,16 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
             gameStatus={gameStatus}
             newLetterInfo={newLetterInfo}
           />
-          <Crosshair />
-          
-          {/* Debug HUD - For testing */}
-          <div className="fixed bottom-4 right-4 bg-black bg-opacity-70 p-2 rounded text-white text-sm z-10">
-            <div>Target: {targetWord || "No target word!"}</div>
-            <div>Progress: {progress || "No progress!"}</div>
-            <div>Status: {gameStatus}</div>
-          </div>
-        </>
+        </div>
+      )}
+      
+      {/* Floating mini HUD - Always visible when main HUD is hidden */}
+      {isInitialized && !showHUD && (
+        <div className="fixed top-4 right-4 bg-black bg-opacity-70 p-2 rounded-lg text-white text-sm z-[9000] pointer-events-none">
+          <div className="font-bold">Score: {score}</div>
+          <div>Time: {timeLeft}s</div>
+          <div className="mt-1 text-xs opacity-50">Press H to show HUD</div>
+        </div>
       )}
     </div>
   );
