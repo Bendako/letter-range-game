@@ -11,13 +11,13 @@ type GameScreenProps = {
   onGameOver: (score: number) => void;
 };
 
-type LetterTarget = {
-  mesh: any; // Use type assertion for now
+interface LetterTarget {
+  mesh: THREE.Mesh;
   letter: string;
-  velocity: any; // Use type assertion for now
+  velocity: THREE.Vector3;
   createdAt?: number; // Add timestamp for age tracking
   row?: number; // Add row information for organization
-};
+}
 
 // Constants
 const GAME_DURATION = 60; // seconds
@@ -29,11 +29,11 @@ const LETTER_SPEED = 0.02; // Reduced from 0.05 for slower movement
 const GameScreen = ({ onGameOver }: GameScreenProps) => {
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<any>(null);
-  const cameraRef = useRef<any>(null);
-  const rendererRef = useRef<any>(null);
-  const raycasterRef = useRef<any>(new THREE.Raycaster());
-  const mouseRef = useRef<any>(new THREE.Vector2());
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster());
+  const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
   const targetsRef = useRef<LetterTarget[]>([]);
   const frameIdRef = useRef<number>(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -49,6 +49,345 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
   const [newLetterInfo, setNewLetterInfo] = useState('');
   const [showHUD, setShowHUD] = useState(true); // New state to control HUD visibility
 
+  // Handle shooting
+  const handleShoot = (event: React.MouseEvent) => {
+    if (!sceneRef.current || !cameraRef.current) return;
+
+    // Don't show the HUD automatically on every shot
+
+    // Update mouse position for raycaster
+    mouseRef.current.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouseRef.current.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    // Update the raycaster
+    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
+
+    // Check for intersections with targets
+    const intersects = raycasterRef.current.intersectObjects(
+      targetsRef.current.map(target => target.mesh)
+    );
+
+    if (intersects.length > 0) {
+      const hitObject = intersects[0].object as THREE.Mesh;
+      const targetIndex = targetsRef.current.findIndex(t => t.mesh === hitObject);
+      
+      if (targetIndex !== -1) {
+        const hitLetter = targetsRef.current[targetIndex].letter;
+        handleLetterHit(hitLetter);
+        
+        // Remove the hit target
+        if (sceneRef.current) {
+          sceneRef.current.remove(hitObject);
+        }
+        targetsRef.current.splice(targetIndex, 1);
+      }
+    }
+  };
+
+  // Handle when a letter is hit
+  const handleLetterHit = (letter: string) => {
+    // Check if the letter is part of the target word
+    const nextLetterIndex = progress.indexOf('_');
+    
+    if (nextLetterIndex !== -1 && targetWord[nextLetterIndex] === letter) {
+      // Correct letter
+      const newProgress = progress.split('');
+      newProgress[nextLetterIndex] = letter;
+      const updatedProgress = newProgress.join('');
+      setProgress(updatedProgress);
+      
+      playSound('correct');
+      setScore(prev => prev + 100);
+      setGameStatus('Good shot!');
+      
+      // Only briefly flash the HUD for word completion
+      if (!updatedProgress.includes('_')) {
+        // Word complete - celebration status
+        setGameStatus(`Great job! +500 points!`);
+        
+        // Show HUD for a brief moment for word completion celebration
+        setShowHUD(true);
+        
+        // Hide HUD after 2 seconds
+        setTimeout(() => {
+          setShowHUD(false);
+        }, 2000);
+        
+        // Add a new word after delay
+        setTimeout(() => {
+          const newTargetWord = TARGET_WORDS[Math.floor(Math.random() * TARGET_WORDS.length)];
+          setTargetWord(newTargetWord);
+          setProgress('_'.repeat(newTargetWord.length));
+          announceTargetWord(newTargetWord);
+          setScore(prev => prev + 500); // Bonus for completing a word
+        }, 3000);
+      }
+    } else {
+      // Wrong letter
+      playSound('wrong');
+      setGameStatus('Wrong letter!');
+      setScore(prev => Math.max(0, prev - 20));
+    }
+  };
+
+  // Create texture for shooting range floor
+  const createRangeFloorTexture = (): THREE.Texture => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const context = canvas.getContext('2d');
+    
+    if (context) {
+      // Base floor color
+      context.fillStyle = '#333333';
+      context.fillRect(0, 0, 512, 512);
+      
+      // Add grid lines
+      context.strokeStyle = '#444444';
+      context.lineWidth = 2;
+      
+      // Horizontal grid lines
+      for (let i = 0; i < 512; i += 64) {
+        context.beginPath();
+        context.moveTo(0, i);
+        context.lineTo(512, i);
+        context.stroke();
+      }
+      
+      // Vertical grid lines
+      for (let i = 0; i < 512; i += 64) {
+        context.beginPath();
+        context.moveTo(i, 0);
+        context.lineTo(i, 512);
+        context.stroke();
+      }
+    }
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(10, 10);
+    return texture;
+  };
+
+  // Create texture for shooting range back wall
+  const createRangeBackWallTexture = (): THREE.Texture => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 512;
+    const context = canvas.getContext('2d');
+    
+    if (context) {
+      // Base wall color
+      context.fillStyle = '#222222';
+      context.fillRect(0, 0, 1024, 512);
+      
+      // Draw some target patterns
+      for (let i = 0; i < 5; i++) {
+        const x = 100 + i * 200;
+        const y = 256;
+        const radius = 80;
+        
+        // Outer ring
+        context.fillStyle = '#333333';
+        context.beginPath();
+        context.arc(x, y, radius, 0, Math.PI * 2);
+        context.fill();
+        
+        // Middle ring
+        context.fillStyle = '#444444';
+        context.beginPath();
+        context.arc(x, y, radius * 0.7, 0, Math.PI * 2);
+        context.fill();
+        
+        // Inner ring
+        context.fillStyle = '#555555';
+        context.beginPath();
+        context.arc(x, y, radius * 0.4, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+    
+    return new THREE.CanvasTexture(canvas);
+  };
+
+  // Add static targets to the background
+  const addStaticTargets = (): void => {
+    if (!sceneRef.current) return;
+    
+    // Create a few static targets at various depths
+    for (let i = 0; i < 8; i++) {
+      const targetGeometry = new THREE.CircleGeometry(1.5, 32);
+      
+      // Create concentric circles for target
+      const targetCanvas = document.createElement('canvas');
+      targetCanvas.width = 256;
+      targetCanvas.height = 256;
+      const context = targetCanvas.getContext('2d');
+      
+      if (context) {
+        // Outer ring
+        context.fillStyle = 'white';
+        context.beginPath();
+        context.arc(128, 128, 128, 0, Math.PI * 2);
+        context.fill();
+        
+        // Middle ring
+        context.fillStyle = 'black';
+        context.beginPath();
+        context.arc(128, 128, 96, 0, Math.PI * 2);
+        context.fill();
+        
+        // Inner ring
+        context.fillStyle = 'red';
+        context.beginPath();
+        context.arc(128, 128, 32, 0, Math.PI * 2);
+        context.fill();
+      }
+      
+      const targetTexture = new THREE.CanvasTexture(targetCanvas);
+      const targetMaterial = new THREE.MeshStandardMaterial({ map: targetTexture });
+      const target = new THREE.Mesh(targetGeometry, targetMaterial);
+      
+      // Position at various locations and depths
+      target.position.x = (Math.random() - 0.5) * 30;
+      target.position.y = Math.random() * 5 + 0;
+      target.position.z = -20 - Math.random() * 10;
+      
+      sceneRef.current.add(target);
+    }
+  };
+
+  // Audio functions
+  const playSound = (type: 'correct' | 'wrong' | 'announcement'): void => {
+    // In a real game, we would play actual sounds here
+    console.log(`Playing ${type} sound`);
+  };
+
+  const announceTargetWord = (word: string): void => {
+    setGameStatus(`Shoot: ${word}!`);
+    playSound('announcement');
+    // Don't automatically show HUD for word announcements
+  };
+
+  // Spawn letter targets without automatically showing the HUD
+  const spawnLetterTarget = (): void => {
+    if (!sceneRef.current || isPaused) return;
+
+    // Create a random letter
+    const letter = LETTERS.charAt(Math.floor(Math.random() * LETTERS.length));
+    
+    // Create the letter geometry
+    const geometry = new THREE.BoxGeometry(2, 2, 0.5);
+    
+    // Create letter texture with a highlight color
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const context = canvas.getContext('2d');
+    
+    if (context) {
+      // Brighter color for better visibility
+      context.fillStyle = '#44AAFF'; // Brighter blue
+      context.fillRect(0, 0, 128, 128);
+      
+      // Add a highlight border
+      context.strokeStyle = '#FFFF00'; // Yellow border
+      context.lineWidth = 10;
+      context.strokeRect(5, 5, 118, 118);
+      
+      context.font = 'bold 80px Arial';
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillStyle = 'white';
+      context.fillText(letter, 64, 64);
+    }
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.MeshStandardMaterial({ map: texture });
+    const mesh = new THREE.Mesh(geometry, material);
+    
+    // Assign to a specific row (0, 1, or 2)
+    const row = Math.floor(Math.random() * ROW_COUNT);
+    
+    // Position based on row
+    // Row 0 (top) at y=5, Row 1 (middle) at y=2, Row 2 (bottom) at y=-1
+    const rowPositions = [5, 2, -1]; 
+    
+    // Position at a fixed height based on row and fixed depth
+    mesh.position.x = Math.random() > 0.5 ? 15 : -15; // Start from either left or right side
+    mesh.position.y = rowPositions[row];
+    mesh.position.z = -10; // Fixed depth
+    
+    // Set velocity only on X-axis (left-right movement)
+    const velocity = new THREE.Vector3(
+      mesh.position.x > 0 ? -LETTER_SPEED : LETTER_SPEED, // Move toward the center
+      0, // No vertical movement
+      0  // No depth movement
+    );
+    
+    // Add to scene and targets array
+    sceneRef.current.add(mesh);
+    targetsRef.current.push({ 
+      mesh, 
+      letter, 
+      velocity,
+      createdAt: Date.now(),
+      row // Store the row information
+    });
+    
+    // Update newLetterInfo without showing the HUD
+    setNewLetterInfo(`New Letter: ${letter} | Row: ${row + 1} (${mesh.position.x > 0 ? 'Right' : 'Left'} side)`);
+    
+    // We don't pause the game or show the HUD for each new letter
+    // This solves the issue of the HUD constantly popping up
+  };
+
+  // Update targets with row-based movement and pause functionality
+  const updateTargets = (): void => {
+    // Skip updates if the game is paused
+    if (isPaused) return;
+    
+    // Move all targets
+    targetsRef.current.forEach(target => {
+      target.mesh.position.add(target.velocity);
+      target.mesh.rotation.y += 0.01; // Only rotate around Y axis for better visibility
+      
+      // Bounce when reaching center or edges
+      if (
+        (target.velocity.x > 0 && target.mesh.position.x > 14) ||
+        (target.velocity.x < 0 && target.mesh.position.x < -14)
+      ) {
+        target.velocity.x *= -1; // Reverse direction
+      }
+    });
+    
+    // Remove targets that are too old (20 seconds for even easier gameplay)
+    const now = Date.now();
+    targetsRef.current = targetsRef.current.filter(target => {
+      if (target.createdAt && now - target.createdAt > 20000) {
+        if (sceneRef.current) {
+          sceneRef.current.remove(target.mesh);
+        }
+        return false;
+      }
+      return true;
+    });
+  };
+
+  // End the game
+  const endGame = (): void => {
+    // Set a final game status
+    setGameStatus('Game Over! Final Score: ' + score);
+    
+    // Don't show HUD for game over, let the GameOverScreen handle it
+    
+    // Transition to game over screen
+    setTimeout(() => {
+      onGameOver(score);
+    }, 1000);
+  };
+
   // Initialize game
   useEffect(() => {
     if (!containerRef.current) return;
@@ -57,6 +396,9 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
     setShowHUD(false);
 
     console.log("Initializing 3D scene...");
+    
+    // Store a reference to the container for cleanup
+    const container = containerRef.current;
     
     try {
       // Check for WebGL support
@@ -91,7 +433,7 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       console.log("Camera set up");
 
       // Setup renderer with error handling
-      let renderer;
+      let renderer: THREE.WebGLRenderer;
       try {
         renderer = new THREE.WebGLRenderer({ 
           antialias: true,
@@ -103,11 +445,11 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
         renderer.setSize(window.innerWidth, window.innerHeight);
         
         // Make sure previous canvas is removed if it exists
-        while (containerRef.current.firstChild) {
-          containerRef.current.removeChild(containerRef.current.firstChild);
+        while (container.firstChild) {
+          container.removeChild(container.firstChild);
         }
         
-        containerRef.current.appendChild(renderer.domElement);
+        container.appendChild(renderer.domElement);
         rendererRef.current = renderer;
         console.log("Renderer initialized");
       } catch (error) {
@@ -266,9 +608,9 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       clearInterval(spawnInterval);
       cancelAnimationFrame(frameIdRef.current);
       
-      if (rendererRef.current && containerRef.current) {
+      if (rendererRef.current && container) {
         try {
-          containerRef.current.removeChild(rendererRef.current.domElement);
+          container.removeChild(rendererRef.current.domElement);
         } catch (error) {
           console.error("Error removing renderer:", error);
         }
@@ -279,346 +621,7 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
         audioRef.current = null;
       }
     };
-  }, [onGameOver]);
-
-  // Create texture for shooting range floor
-  const createRangeFloorTexture = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
-    const context = canvas.getContext('2d');
-    
-    if (context) {
-      // Base floor color
-      context.fillStyle = '#333333';
-      context.fillRect(0, 0, 512, 512);
-      
-      // Add grid lines
-      context.strokeStyle = '#444444';
-      context.lineWidth = 2;
-      
-      // Horizontal grid lines
-      for (let i = 0; i < 512; i += 64) {
-        context.beginPath();
-        context.moveTo(0, i);
-        context.lineTo(512, i);
-        context.stroke();
-      }
-      
-      // Vertical grid lines
-      for (let i = 0; i < 512; i += 64) {
-        context.beginPath();
-        context.moveTo(i, 0);
-        context.lineTo(i, 512);
-        context.stroke();
-      }
-    }
-    
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(10, 10);
-    return texture;
-  };
-
-  // Create texture for shooting range back wall
-  const createRangeBackWallTexture = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1024;
-    canvas.height = 512;
-    const context = canvas.getContext('2d');
-    
-    if (context) {
-      // Base wall color
-      context.fillStyle = '#222222';
-      context.fillRect(0, 0, 1024, 512);
-      
-      // Draw some target patterns
-      for (let i = 0; i < 5; i++) {
-        const x = 100 + i * 200;
-        const y = 256;
-        const radius = 80;
-        
-        // Outer ring
-        context.fillStyle = '#333333';
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.fill();
-        
-        // Middle ring
-        context.fillStyle = '#444444';
-        context.beginPath();
-        context.arc(x, y, radius * 0.7, 0, Math.PI * 2);
-        context.fill();
-        
-        // Inner ring
-        context.fillStyle = '#555555';
-        context.beginPath();
-        context.arc(x, y, radius * 0.4, 0, Math.PI * 2);
-        context.fill();
-      }
-    }
-    
-    return new THREE.CanvasTexture(canvas);
-  };
-
-  // Add static targets to the background
-  const addStaticTargets = () => {
-    if (!sceneRef.current) return;
-    
-    // Create a few static targets at various depths
-    for (let i = 0; i < 8; i++) {
-      const targetGeometry = new THREE.CircleGeometry(1.5, 32);
-      
-      // Create concentric circles for target
-      const targetCanvas = document.createElement('canvas');
-      targetCanvas.width = 256;
-      targetCanvas.height = 256;
-      const context = targetCanvas.getContext('2d');
-      
-      if (context) {
-        // Outer ring
-        context.fillStyle = 'white';
-        context.beginPath();
-        context.arc(128, 128, 128, 0, Math.PI * 2);
-        context.fill();
-        
-        // Middle ring
-        context.fillStyle = 'black';
-        context.beginPath();
-        context.arc(128, 128, 96, 0, Math.PI * 2);
-        context.fill();
-        
-        // Inner ring
-        context.fillStyle = 'red';
-        context.beginPath();
-        context.arc(128, 128, 32, 0, Math.PI * 2);
-        context.fill();
-      }
-      
-      const targetTexture = new THREE.CanvasTexture(targetCanvas);
-      const targetMaterial = new THREE.MeshStandardMaterial({ map: targetTexture });
-      const target = new THREE.Mesh(targetGeometry, targetMaterial);
-      
-      // Position at various locations and depths
-      target.position.x = (Math.random() - 0.5) * 30;
-      target.position.y = Math.random() * 5 + 0;
-      target.position.z = -20 - Math.random() * 10;
-      
-      sceneRef.current.add(target);
-    }
-  };
-
-  // Handle shooting
-  const handleShoot = (event: React.MouseEvent) => {
-    if (!sceneRef.current || !cameraRef.current) return;
-
-    // Don't show the HUD automatically on every shot
-
-    // Update mouse position for raycaster
-    mouseRef.current.x = (event.clientX / window.innerWidth) * 2 - 1;
-    mouseRef.current.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-    // Update the raycaster
-    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
-
-    // Check for intersections with targets
-    const intersects = raycasterRef.current.intersectObjects(
-      targetsRef.current.map(target => target.mesh)
-    );
-
-    if (intersects.length > 0) {
-      const hitObject = intersects[0].object as any;
-      const targetIndex = targetsRef.current.findIndex(t => t.mesh === hitObject);
-      
-      if (targetIndex !== -1) {
-        const hitLetter = targetsRef.current[targetIndex].letter;
-        handleLetterHit(hitLetter);
-        
-        // Remove the hit target
-        if (sceneRef.current) {
-          sceneRef.current.remove(hitObject);
-        }
-        targetsRef.current.splice(targetIndex, 1);
-      }
-    }
-  };
-
-  // Handle when a letter is hit
-  const handleLetterHit = (letter: string) => {
-    // Check if the letter is part of the target word
-    const nextLetterIndex = progress.indexOf('_');
-    
-    if (nextLetterIndex !== -1 && targetWord[nextLetterIndex] === letter) {
-      // Correct letter
-      const newProgress = progress.split('');
-      newProgress[nextLetterIndex] = letter;
-      const updatedProgress = newProgress.join('');
-      setProgress(updatedProgress);
-      
-      playSound('correct');
-      setScore(prev => prev + 100);
-      setGameStatus('Good shot!');
-      
-      // Only briefly flash the HUD for word completion
-      if (!updatedProgress.includes('_')) {
-        // Word complete - celebration status
-        setGameStatus(`Great job! +500 points!`);
-        
-        // Show HUD for a brief moment for word completion celebration
-        setShowHUD(true);
-        
-        // Hide HUD after 2 seconds
-        setTimeout(() => {
-          setShowHUD(false);
-        }, 2000);
-        
-        // Add a new word after delay
-        setTimeout(() => {
-          const newTargetWord = TARGET_WORDS[Math.floor(Math.random() * TARGET_WORDS.length)];
-          setTargetWord(newTargetWord);
-          setProgress('_'.repeat(newTargetWord.length));
-          announceTargetWord(newTargetWord);
-          setScore(prev => prev + 500); // Bonus for completing a word
-        }, 3000);
-      }
-    } else {
-      // Wrong letter
-      playSound('wrong');
-      setGameStatus('Wrong letter!');
-      setScore(prev => Math.max(0, prev - 20));
-    }
-  };
-
-  // Spawn letter targets without automatically showing the HUD
-  const spawnLetterTarget = () => {
-    if (!sceneRef.current || isPaused) return;
-
-    // Create a random letter
-    const letter = LETTERS.charAt(Math.floor(Math.random() * LETTERS.length));
-    
-    // Create the letter geometry
-    const geometry = new THREE.BoxGeometry(2, 2, 0.5);
-    
-    // Create letter texture with a highlight color
-    const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 128;
-    const context = canvas.getContext('2d');
-    
-    if (context) {
-      // Brighter color for better visibility
-      context.fillStyle = '#44AAFF'; // Brighter blue
-      context.fillRect(0, 0, 128, 128);
-      
-      // Add a highlight border
-      context.strokeStyle = '#FFFF00'; // Yellow border
-      context.lineWidth = 10;
-      context.strokeRect(5, 5, 118, 118);
-      
-      context.font = 'bold 80px Arial';
-      context.textAlign = 'center';
-      context.textBaseline = 'middle';
-      context.fillStyle = 'white';
-      context.fillText(letter, 64, 64);
-    }
-    
-    const texture = new THREE.CanvasTexture(canvas);
-    const material = new THREE.MeshStandardMaterial({ map: texture });
-    const mesh = new THREE.Mesh(geometry, material);
-    
-    // Assign to a specific row (0, 1, or 2)
-    const row = Math.floor(Math.random() * ROW_COUNT);
-    
-    // Position based on row
-    // Row 0 (top) at y=5, Row 1 (middle) at y=2, Row 2 (bottom) at y=-1
-    const rowPositions = [5, 2, -1]; 
-    
-    // Position at a fixed height based on row and fixed depth
-    mesh.position.x = Math.random() > 0.5 ? 15 : -15; // Start from either left or right side
-    mesh.position.y = rowPositions[row];
-    mesh.position.z = -10; // Fixed depth
-    
-    // Set velocity only on X-axis (left-right movement)
-    const velocity = new THREE.Vector3(
-      mesh.position.x > 0 ? -LETTER_SPEED : LETTER_SPEED, // Move toward the center
-      0, // No vertical movement
-      0  // No depth movement
-    );
-    
-    // Add to scene and targets array
-    sceneRef.current.add(mesh);
-    targetsRef.current.push({ 
-      mesh, 
-      letter, 
-      velocity,
-      createdAt: Date.now(),
-      row // Store the row information
-    });
-    
-    // Update newLetterInfo without showing the HUD
-    setNewLetterInfo(`New Letter: ${letter} | Row: ${row + 1} (${mesh.position.x > 0 ? 'Right' : 'Left'} side)`);
-    
-    // We don't pause the game or show the HUD for each new letter
-    // This solves the issue of the HUD constantly popping up
-  };
-
-  // Update targets with row-based movement and pause functionality
-  const updateTargets = () => {
-    // Skip updates if the game is paused
-    if (isPaused) return;
-    
-    // Move all targets
-    targetsRef.current.forEach(target => {
-      target.mesh.position.add(target.velocity);
-      target.mesh.rotation.y += 0.01; // Only rotate around Y axis for better visibility
-      
-      // Bounce when reaching center or edges
-      if (
-        (target.velocity.x > 0 && target.mesh.position.x > 14) ||
-        (target.velocity.x < 0 && target.mesh.position.x < -14)
-      ) {
-        target.velocity.x *= -1; // Reverse direction
-      }
-    });
-    
-    // Remove targets that are too old (20 seconds for even easier gameplay)
-    const now = Date.now();
-    targetsRef.current = targetsRef.current.filter(target => {
-      if (target.createdAt && now - target.createdAt > 20000) {
-        if (sceneRef.current) {
-          sceneRef.current.remove(target.mesh);
-        }
-        return false;
-      }
-      return true;
-    });
-  };
-
-  // Audio functions
-  const playSound = (type: 'correct' | 'wrong' | 'announcement') => {
-    // In a real game, we would play actual sounds here
-    console.log(`Playing ${type} sound`);
-  };
-
-  const announceTargetWord = (word: string) => {
-    setGameStatus(`Shoot: ${word}!`);
-    playSound('announcement');
-    // Don't automatically show HUD for word announcements
-  };
-
-  // End the game
-  const endGame = () => {
-    // Set a final game status
-    setGameStatus('Game Over! Final Score: ' + score);
-    
-    // Don't show HUD for game over, let the GameOverScreen handle it
-    
-    // Transition to game over screen
-    setTimeout(() => {
-      onGameOver(score);
-    }, 1000);
-  };
+  }, [onGameOver]); // We're intentionally omitting some dependencies that would cause issues
 
   // Toggle HUD on keypress (for testing)
   useEffect(() => {
