@@ -1,39 +1,44 @@
 // File: components/GameScreen.tsx
 "use client";
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import Crosshair from './Crosshair';
 import SimpleHUD from './SimpleHUD';
-
 // Type definitions
 type GameScreenProps = {
   onGameOver: (score: number) => void;
 };
 
-type LetterTarget = {
-  mesh: any; // Use type assertion for now
+interface LetterTarget {
+  mesh: THREE.Mesh;
   letter: string;
-  velocity: any; // Use type assertion for now
-  createdAt?: number; // Add timestamp for age tracking
-  row?: number; // Add row information for organization
-};
+  velocity: THREE.Vector3;
+  createdAt: number;
+  row: number;
+}
 
-// Constants
+// Constants - moved to the top for better maintainability
 const GAME_DURATION = 60; // seconds
 const TARGET_WORDS = ['CAT', 'DOG', 'RUN', 'JUMP', 'PLAY', 'FAST', 'SLOW', 'HAPPY', 'CODE', 'GAME'];
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const ROW_COUNT = 3; // Number of rows for letter organization
-const LETTER_SPEED = 0.02; // Reduced from 0.05 for slower movement
+const LETTER_SPEED = 0.02; // Base movement speed
+const LETTER_LIFETIME = 20000; // 20 seconds before a letter disappears
+const LETTER_PAUSE_DURATION = 3000; // 3 seconds to show new letter info
+const WORD_COMPLETION_BONUS = 500; // Points awarded for completing a word
+const CORRECT_LETTER_POINTS = 100; // Points for hitting the correct letter
+const WRONG_LETTER_PENALTY = 20; // Points deducted for hitting a wrong letter
+const STATIC_TARGET_COUNT = 8; // Number of static targets in background
 
 const GameScreen = ({ onGameOver }: GameScreenProps) => {
-  // Refs
+  // Refs with proper typing
   const containerRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<any>(null);
-  const cameraRef = useRef<any>(null);
-  const rendererRef = useRef<any>(null);
-  const raycasterRef = useRef<any>(new THREE.Raycaster());
-  const mouseRef = useRef<any>(new THREE.Vector2());
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster());
+  const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
   const targetsRef = useRef<LetterTarget[]>([]);
   const frameIdRef = useRef<number>(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -44,82 +49,125 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
   const [targetWord, setTargetWord] = useState('');
   const [progress, setProgress] = useState('');
   const [gameStatus, setGameStatus] = useState('Get Ready!');
-  const [isInitialized, setIsInitialized] = useState(false); // Add state to track initialization
+  const [isInitialized, setIsInitialized] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [newLetterInfo, setNewLetterInfo] = useState('');
 
-  // Initialize game
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    console.log("Initializing 3D scene...");
+  // Helper functions
+  const playSound = useCallback((type: 'correct' | 'wrong' | 'announcement') => {
+    // In a real implementation, we would use actual sound effects
+    console.log(`Playing ${type} sound`);
     
-    try {
-      // Check for WebGL support
-      try {
-        const canvas = document.createElement('canvas');
-        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-        if (!gl) {
-          console.error("WebGL is not available in your browser");
-          return;
-        }
-      } catch (e) {
-        console.error("Error checking WebGL support:", e);
-        return;
-      }
-
-      // Setup Three.js scene with shooting range background color
-      const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x1A1A2E); // Darker blue for indoor range
-      scene.fog = new THREE.Fog(0x1A1A2E, 15, 50); // Add fog for depth
-      sceneRef.current = scene;
-      console.log("Scene created");
-
-      // Setup camera
-      const camera = new THREE.PerspectiveCamera(
-        75,
-        window.innerWidth / window.innerHeight,
-        0.1,
-        1000
-      );
-      camera.position.z = 15;
-      cameraRef.current = camera;
-      console.log("Camera set up");
-
-      // Setup renderer with error handling
-      let renderer;
-      try {
-        renderer = new THREE.WebGLRenderer({ 
-          antialias: true,
-          alpha: true,
-          canvas: document.createElement('canvas') 
-        });
-        renderer.setClearColor(0x1A1A2E, 1);
-        renderer.setPixelRatio(window.devicePixelRatio);
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        
-        // Make sure previous canvas is removed if it exists
-        while (containerRef.current.firstChild) {
-          containerRef.current.removeChild(containerRef.current.firstChild);
-        }
-        
-        containerRef.current.appendChild(renderer.domElement);
-        rendererRef.current = renderer;
-        console.log("Renderer initialized");
-      } catch (error) {
-        console.error("Error creating WebGL renderer:", error);
-        return;
-      }
-    } catch (error) {
-      console.error("Error setting up 3D environment:", error);
-      return;
+    // Example implementation with actual audio:
+    /*
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
     }
+    
+    const sound = new Audio(`/sounds/${type}.mp3`);
+    sound.volume = 0.5;
+    sound.play();
+    audioRef.current = sound;
+    */
+  }, []);
 
-    // Add atmospheric lighting for shooting range
+  const announceTargetWord = useCallback((word: string) => {
+    setGameStatus(`Shoot: ${word}!`);
+    playSound('announcement');
+  }, [playSound]);
+
+  const getRandomTargetWord = useCallback(() => {
+    return TARGET_WORDS[Math.floor(Math.random() * TARGET_WORDS.length)];
+  }, []);
+
+  const createRangeFloorTexture = useCallback(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const context = canvas.getContext('2d');
+    
+    if (context) {
+      // Base floor color
+      context.fillStyle = '#333333';
+      context.fillRect(0, 0, 512, 512);
+      
+      // Add grid lines
+      context.strokeStyle = '#444444';
+      context.lineWidth = 2;
+      
+      // Horizontal grid lines
+      for (let i = 0; i < 512; i += 64) {
+        context.beginPath();
+        context.moveTo(0, i);
+        context.lineTo(512, i);
+        context.stroke();
+      }
+      
+      // Vertical grid lines
+      for (let i = 0; i < 512; i += 64) {
+        context.beginPath();
+        context.moveTo(i, 0);
+        context.lineTo(i, 512);
+        context.stroke();
+      }
+    }
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(10, 10);
+    return texture;
+  }, []);
+
+  const createRangeBackWallTexture = useCallback(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 512;
+    const context = canvas.getContext('2d');
+    
+    if (context) {
+      // Base wall color
+      context.fillStyle = '#222222';
+      context.fillRect(0, 0, 1024, 512);
+      
+      // Draw some target patterns
+      for (let i = 0; i < 5; i++) {
+        const x = 100 + i * 200;
+        const y = 256;
+        const radius = 80;
+        
+        // Outer ring
+        context.fillStyle = '#333333';
+        context.beginPath();
+        context.arc(x, y, radius, 0, Math.PI * 2);
+        context.fill();
+        
+        // Middle ring
+        context.fillStyle = '#444444';
+        context.beginPath();
+        context.arc(x, y, radius * 0.7, 0, Math.PI * 2);
+        context.fill();
+        
+        // Inner ring
+        context.fillStyle = '#555555';
+        context.beginPath();
+        context.arc(x, y, radius * 0.4, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+    
+    return new THREE.CanvasTexture(canvas);
+  }, []);
+
+  // Create the static environment
+  const setupEnvironment = useCallback(() => {
+    if (!sceneRef.current) return;
+    
+    // Add lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
     sceneRef.current.add(ambientLight);
 
-    // Add spotlight from above like range lighting
     const spotLight = new THREE.SpotLight(0xffffff, 1);
     spotLight.position.set(0, 15, 5);
     spotLight.angle = Math.PI / 6;
@@ -129,12 +177,11 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
     spotLight.castShadow = true;
     sceneRef.current.add(spotLight);
 
-    // Add some directional light
     const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
     directionalLight.position.set(0, 5, 10);
     sceneRef.current.add(directionalLight);
 
-    // Setup floor as shooting range floor
+    // Add floor
     const floorGeometry = new THREE.PlaneGeometry(100, 100);
     const floorTexture = createRangeFloorTexture();
     const floorMaterial = new THREE.MeshStandardMaterial({ 
@@ -146,7 +193,7 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
     floor.position.y = -5;
     sceneRef.current.add(floor);
 
-    // Add back wall of shooting range with target patterns
+    // Add back wall
     const backWallGeometry = new THREE.PlaneGeometry(100, 30);
     const backWallTexture = createRangeBackWallTexture();
     const backWallMaterial = new THREE.MeshStandardMaterial({ 
@@ -190,180 +237,14 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       divider.position.z = -15;
       sceneRef.current.add(divider);
     }
-
-    // Add some static targets in the background
-    addStaticTargets();
-
-    // Initialize a random target word
-    const newTargetWord = TARGET_WORDS[Math.floor(Math.random() * TARGET_WORDS.length)];
-    setTargetWord(newTargetWord);
-    setProgress('_'.repeat(newTargetWord.length));
-
-    // Start the announcement
-    announceTargetWord(newTargetWord);
-    
-    // Set initialization flag
-    setIsInitialized(true);
-
-    // Start spawning targets - with a longer interval for easier gameplay
-    const spawnInterval = setInterval(() => {
-      spawnLetterTarget();
-    }, 1200); // Increased from 800ms for slower spawning
-
-    // Setup game timer
-    const timerInterval = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerInterval);
-          clearInterval(spawnInterval);
-          endGame();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    // Start animation loop
-    const animate = () => {
-      frameIdRef.current = requestAnimationFrame(animate);
-      
-      try {
-        // Update target positions
-        updateTargets();
-        
-        // Render the scene
-        if (rendererRef.current && sceneRef.current && cameraRef.current) {
-          rendererRef.current.render(sceneRef.current, cameraRef.current);
-        } else {
-          console.warn("Renderer, scene, or camera not available for rendering");
-        }
-      } catch (error) {
-        console.error("Error in animation loop:", error);
-      }
-    };
-    
-    console.log("Starting animation loop");
-    animate();
-
-    // Handle window resize
-    const handleResize = () => {
-      if (!cameraRef.current || !rendererRef.current) return;
-      
-      cameraRef.current.aspect = window.innerWidth / window.innerHeight;
-      cameraRef.current.updateProjectionMatrix();
-      rendererRef.current.setSize(window.innerWidth, window.innerHeight);
-    };
-    window.addEventListener('resize', handleResize);
-
-    // Cleanup function
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      clearInterval(timerInterval);
-      clearInterval(spawnInterval);
-      cancelAnimationFrame(frameIdRef.current);
-      
-      if (rendererRef.current && containerRef.current) {
-        try {
-          containerRef.current.removeChild(rendererRef.current.domElement);
-        } catch (error) {
-          console.error("Error removing renderer:", error);
-        }
-      }
-      
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-    };
-  }, [onGameOver]);
-
-  // Create texture for shooting range floor
-  const createRangeFloorTexture = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
-    const context = canvas.getContext('2d');
-    
-    if (context) {
-      // Base floor color
-      context.fillStyle = '#333333';
-      context.fillRect(0, 0, 512, 512);
-      
-      // Add grid lines
-      context.strokeStyle = '#444444';
-      context.lineWidth = 2;
-      
-      // Horizontal grid lines
-      for (let i = 0; i < 512; i += 64) {
-        context.beginPath();
-        context.moveTo(0, i);
-        context.lineTo(512, i);
-        context.stroke();
-      }
-      
-      // Vertical grid lines
-      for (let i = 0; i < 512; i += 64) {
-        context.beginPath();
-        context.moveTo(i, 0);
-        context.lineTo(i, 512);
-        context.stroke();
-      }
-    }
-    
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(10, 10);
-    return texture;
-  };
-
-  // Create texture for shooting range back wall
-  const createRangeBackWallTexture = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1024;
-    canvas.height = 512;
-    const context = canvas.getContext('2d');
-    
-    if (context) {
-      // Base wall color
-      context.fillStyle = '#222222';
-      context.fillRect(0, 0, 1024, 512);
-      
-      // Draw some target patterns
-      for (let i = 0; i < 5; i++) {
-        const x = 100 + i * 200;
-        const y = 256;
-        const radius = 80;
-        
-        // Outer ring
-        context.fillStyle = '#333333';
-        context.beginPath();
-        context.arc(x, y, radius, 0, Math.PI * 2);
-        context.fill();
-        
-        // Middle ring
-        context.fillStyle = '#444444';
-        context.beginPath();
-        context.arc(x, y, radius * 0.7, 0, Math.PI * 2);
-        context.fill();
-        
-        // Inner ring
-        context.fillStyle = '#555555';
-        context.beginPath();
-        context.arc(x, y, radius * 0.4, 0, Math.PI * 2);
-        context.fill();
-      }
-    }
-    
-    return new THREE.CanvasTexture(canvas);
-  };
+  }, [createRangeFloorTexture, createRangeBackWallTexture]);
 
   // Add static targets to the background
-  const addStaticTargets = () => {
+  const addStaticTargets = useCallback(() => {
     if (!sceneRef.current) return;
     
-    // Create a few static targets at various depths
-    for (let i = 0; i < 8; i++) {
+    // Create static targets at various depths
+    for (let i = 0; i < STATIC_TARGET_COUNT; i++) {
       const targetGeometry = new THREE.CircleGeometry(1.5, 32);
       
       // Create concentric circles for target
@@ -398,88 +279,171 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       
       // Position at various locations and depths
       target.position.x = (Math.random() - 0.5) * 30;
-      target.position.y = Math.random() * 5 + 0;
+      target.position.y = Math.random() * 5;
       target.position.z = -20 - Math.random() * 10;
       
       sceneRef.current.add(target);
     }
-  };
+  }, []);
 
-  // Handle shooting
-  const handleShoot = (event: React.MouseEvent) => {
-    if (!sceneRef.current || !cameraRef.current) return;
+  // Initialize the game's 3D environment
+  useEffect(() => {
+    if (!containerRef.current) return;
 
-    // Update mouse position for raycaster
-    mouseRef.current.x = (event.clientX / window.innerWidth) * 2 - 1;
-    mouseRef.current.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-    // Update the raycaster
-    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
-
-    // Check for intersections with targets
-    const intersects = raycasterRef.current.intersectObjects(
-      targetsRef.current.map(target => target.mesh)
-    );
-
-    if (intersects.length > 0) {
-      const hitObject = intersects[0].object as any;
-      const targetIndex = targetsRef.current.findIndex(t => t.mesh === hitObject);
-      
-      if (targetIndex !== -1) {
-        const hitLetter = targetsRef.current[targetIndex].letter;
-        handleLetterHit(hitLetter);
-        
-        // Remove the hit target
-        if (sceneRef.current) {
-          sceneRef.current.remove(hitObject);
-        }
-        targetsRef.current.splice(targetIndex, 1);
-      }
-    }
-  };
-
-  // Handle when a letter is hit
-  const handleLetterHit = (letter: string) => {
-    // Check if the letter is part of the target word
-    const nextLetterIndex = progress.indexOf('_');
+    console.log("Initializing 3D scene...");
     
-    if (nextLetterIndex !== -1 && targetWord[nextLetterIndex] === letter) {
-      // Correct letter
-      const newProgress = progress.split('');
-      newProgress[nextLetterIndex] = letter;
-      const updatedProgress = newProgress.join('');
-      setProgress(updatedProgress);
-      
-      playSound('correct');
-      setScore(prev => prev + 100);
-      setGameStatus('Good shot!');
-
-      // Check if word is complete
-      if (!updatedProgress.includes('_')) {
-        // Word complete - celebration status
-        setGameStatus(`Great job! +500 points!`);
-        
-        // Keep the success message visible longer (3 seconds) before moving to next word
-        setTimeout(() => {
-          const newTargetWord = TARGET_WORDS[Math.floor(Math.random() * TARGET_WORDS.length)];
-          setTargetWord(newTargetWord);
-          setProgress('_'.repeat(newTargetWord.length));
-          announceTargetWord(newTargetWord);
-          setScore(prev => prev + 500); // Bonus for completing a word
-        }, 3000);
+    try {
+      // Check for WebGL support
+      try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (!gl) {
+          console.error("WebGL is not available in your browser");
+          return;
+        }
+      } catch (e) {
+        console.error("Error checking WebGL support:", e);
+        return;
       }
-    } else {
-      // Wrong letter
-      playSound('wrong');
-      setGameStatus('Wrong letter!');
-      setScore(prev => Math.max(0, prev - 20));
+
+      // Setup Three.js scene
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x1A1A2E); // Darker blue for indoor range
+      scene.fog = new THREE.Fog(0x1A1A2E, 15, 50);
+      sceneRef.current = scene;
+
+      // Setup camera
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      camera.position.z = 15;
+      cameraRef.current = camera;
+
+      // Setup renderer with error handling
+      try {
+        const renderer = new THREE.WebGLRenderer({ 
+          antialias: true,
+          alpha: true,
+          canvas: document.createElement('canvas') 
+        });
+        renderer.setClearColor(0x1A1A2E, 1);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        
+        // Clean up container before adding new renderer
+        while (containerRef.current.firstChild) {
+          containerRef.current.removeChild(containerRef.current.firstChild);
+        }
+        
+        containerRef.current.appendChild(renderer.domElement);
+        rendererRef.current = renderer;
+      } catch (error) {
+        console.error("Error creating WebGL renderer:", error);
+        return;
+      }
+
+      // Setup the 3D environment
+      setupEnvironment();
+      
+      // Add static targets for visual interest
+      addStaticTargets();
+
+      // Initialize the first target word
+      const newTargetWord = getRandomTargetWord();
+      setTargetWord(newTargetWord);
+      setProgress('_'.repeat(newTargetWord.length));
+      announceTargetWord(newTargetWord);
+      
+      // Mark initialization as complete
+      setIsInitialized(true);
+    } catch (error) {
+      console.error("Error setting up 3D environment:", error);
+      return;
     }
-  };
 
-  // No duplicate declaration here
+    // Handle window resize
+    const handleResize = () => {
+      if (!cameraRef.current || !rendererRef.current) return;
+      
+      cameraRef.current.aspect = window.innerWidth / window.innerHeight;
+      cameraRef.current.updateProjectionMatrix();
+      rendererRef.current.setSize(window.innerWidth, window.innerHeight);
+    };
+    window.addEventListener('resize', handleResize);
 
-  // UPDATED: Spawn letter targets with pause for visibility
-  const spawnLetterTarget = () => {
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(frameIdRef.current);
+      
+      if (rendererRef.current && containerRef.current) {
+        try {
+          containerRef.current.removeChild(rendererRef.current.domElement);
+        } catch (error) {
+          console.error("Error removing renderer:", error);
+        }
+      }
+      
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, [setupEnvironment, addStaticTargets, getRandomTargetWord, announceTargetWord]);
+
+  // Start game logic after initialization
+  useEffect(() => {
+    if (!isInitialized) return;
+
+    // Start spawning targets
+    const spawnInterval = setInterval(() => {
+      spawnLetterTarget();
+    }, 1200);
+
+    // Setup game timer
+    const timerInterval = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerInterval);
+          clearInterval(spawnInterval);
+          endGame();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Start animation loop
+    const animate = () => {
+      frameIdRef.current = requestAnimationFrame(animate);
+      
+      try {
+        // Update target positions
+        updateTargets();
+        
+        // Render the scene
+        if (rendererRef.current && sceneRef.current && cameraRef.current) {
+          rendererRef.current.render(sceneRef.current, cameraRef.current);
+        }
+      } catch (error) {
+        console.error("Error in animation loop:", error);
+      }
+    };
+    
+    animate();
+
+    // Cleanup function
+    return () => {
+      clearInterval(timerInterval);
+      clearInterval(spawnInterval);
+      cancelAnimationFrame(frameIdRef.current);
+    };
+  }, [isInitialized]);
+
+  // Spawn letter targets
+  const spawnLetterTarget = useCallback(() => {
     if (!sceneRef.current || isPaused) return;
 
     // Create a random letter
@@ -551,16 +515,16 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
     setGameStatus(`New Letter: ${letter}`);
     setNewLetterInfo(`Row: ${row + 1} (${mesh.position.x > 0 ? 'Right' : 'Left'} side)`);
     
-    // Resume the game after 5 seconds
+    // Resume the game after pause duration
     setTimeout(() => {
       setIsPaused(false);
       setNewLetterInfo('');
       setGameStatus(targetWord ? `Shoot: ${targetWord}!` : 'Get Ready!');
-    }, 5000);
-  };
+    }, LETTER_PAUSE_DURATION);
+  }, [isPaused, targetWord]);
 
-  // UPDATED: Update targets with row-based movement and pause functionality
-  const updateTargets = () => {
+  // Update target positions
+  const updateTargets = useCallback(() => {
     // Skip updates if the game is paused
     if (isPaused) return;
     
@@ -578,10 +542,10 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       }
     });
     
-    // Remove targets that are too old (20 seconds for even easier gameplay)
+    // Remove targets that are too old
     const now = Date.now();
     targetsRef.current = targetsRef.current.filter(target => {
-      if (target.createdAt && now - target.createdAt > 20000) {
+      if (now - target.createdAt > LETTER_LIFETIME) {
         if (sceneRef.current) {
           sceneRef.current.remove(target.mesh);
         }
@@ -589,29 +553,89 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
       }
       return true;
     });
-  };
+  }, [isPaused]);
 
-  // Audio functions
-  const playSound = (type: 'correct' | 'wrong' | 'announcement') => {
-    // In a real game, we would play actual sounds here
-    console.log(`Playing ${type} sound`);
-  };
+  // Handle when a letter is hit
+  const handleLetterHit = useCallback((letter: string) => {
+    // Check if the letter is part of the target word
+    const nextLetterIndex = progress.indexOf('_');
+    
+    if (nextLetterIndex !== -1 && targetWord[nextLetterIndex] === letter) {
+      // Correct letter
+      const newProgress = progress.split('');
+      newProgress[nextLetterIndex] = letter;
+      const updatedProgress = newProgress.join('');
+      setProgress(updatedProgress);
+      
+      playSound('correct');
+      setScore(prev => prev + CORRECT_LETTER_POINTS);
+      setGameStatus('Good shot!');
 
-  const announceTargetWord = (word: string) => {
-    setGameStatus(`Shoot: ${word}!`);
-    playSound('announcement');
-  };
+      // Check if word is complete
+      if (!updatedProgress.includes('_')) {
+        // Word complete - celebration status
+        setGameStatus(`Great job! +${WORD_COMPLETION_BONUS} points!`);
+        
+        // Keep the success message visible longer before moving to next word
+        setTimeout(() => {
+          const newTargetWord = getRandomTargetWord();
+          setTargetWord(newTargetWord);
+          setProgress('_'.repeat(newTargetWord.length));
+          announceTargetWord(newTargetWord);
+          setScore(prev => prev + WORD_COMPLETION_BONUS); // Bonus for completing a word
+        }, 3000);
+      }
+    } else {
+      // Wrong letter
+      playSound('wrong');
+      setGameStatus('Wrong letter!');
+      setScore(prev => Math.max(0, prev - WRONG_LETTER_PENALTY));
+    }
+  }, [progress, targetWord, playSound, getRandomTargetWord, announceTargetWord]);
+
+  // Handle shooting
+  const handleShoot = useCallback((event: React.MouseEvent) => {
+    if (!sceneRef.current || !cameraRef.current || isPaused) return;
+
+    // Update mouse position for raycaster
+    mouseRef.current.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouseRef.current.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+    // Update the raycaster
+    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
+
+    // Check for intersections with targets
+    const intersects = raycasterRef.current.intersectObjects(
+      targetsRef.current.map(target => target.mesh)
+    );
+
+    if (intersects.length > 0) {
+      const hitObject = intersects[0].object;
+      const targetIndex = targetsRef.current.findIndex(t => t.mesh === hitObject);
+      
+      if (targetIndex !== -1) {
+        const hitLetter = targetsRef.current[targetIndex].letter;
+        handleLetterHit(hitLetter);
+        
+        // Remove the hit target
+        if (sceneRef.current) {
+          sceneRef.current.remove(hitObject);
+        }
+        targetsRef.current.splice(targetIndex, 1);
+      }
+    }
+  }, [handleLetterHit, isPaused]);
 
   // End the game
-  const endGame = () => {
+  const endGame = useCallback(() => {
     // Set a final game status
     setGameStatus('Game Over! Final Score: ' + score);
     
-    // Keep the HUD visible for a few seconds (5 seconds) before transitioning
+    // Keep the HUD visible for a few seconds before transitioning
     setTimeout(() => {
       onGameOver(score);
     }, 5000);
-  };
+  }, [score, onGameOver]);
 
   return (
     <div className="relative w-full h-screen overflow-hidden" ref={containerRef} onClick={handleShoot}>
@@ -620,9 +644,9 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
         {/* Three.js will render here */}
       </div>
       
-      {/* HUD Components - Increased z-index values and forcing display */}
+      {/* HUD Components */}
       {isInitialized && (
-        <div className="fixed inset-0 z-[9000] pointer-events-none" style={{ pointerEvents: 'none' }}>
+        <div className="fixed inset-0 z-[9000] pointer-events-none">
           <SimpleHUD 
             targetWord={targetWord}
             progress={progress}
@@ -632,13 +656,6 @@ const GameScreen = ({ onGameOver }: GameScreenProps) => {
             newLetterInfo={newLetterInfo}
           />
           <Crosshair />
-          
-          {/* Debug HUD - For testing */}
-          <div className="fixed bottom-4 right-4 bg-black bg-opacity-80 p-2 rounded text-white text-sm">
-            <div>Target: {targetWord || "No target word!"}</div>
-            <div>Progress: {progress || "No progress!"}</div>
-            <div>Status: {gameStatus}</div>
-          </div>
         </div>
       )}
     </div>
