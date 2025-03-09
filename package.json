@@ -20,7 +20,8 @@
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.0.2",
     "tailwindcss-animate": "^1.0.7",
-    "three": "^0.174.0"
+    "three": "^0.174.0",
+    "troika-three-text": "^0.52.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
@@ -28,7 +29,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/three": "^0.174.0",
+    "@types/three": "^0.160.0",
     "eslint": "^9",
     "eslint-config-next": "15.2.1",
     "tailwindcss": "^4.0.10",
